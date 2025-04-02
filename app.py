@@ -27,11 +27,8 @@ Also, run the following once to download required NLTK data:
 
 
 # Installations
-!pip uninstall -y numpy pandas tensorflow
-!pip install numpy==1.26.0 pandas==2.2.2
-!pip install tensorflow==2.18.0
-!pip install yfinance prophet scikit-learn xgboost optuna matplotlib seaborn nltk tweepy praw pyngrok altair blinker cachetools click protobuf pyarrow tenacity toml watchdog gitpython pandas_datareader
 
+!pip install -r requirements.txt
 # Imports
 import os
 import sys
