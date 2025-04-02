@@ -1,5 +1,7 @@
+
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
+#-*- coding: utf-8 -*-
+
 """
 Investor‑Grade Options Trading Model
 --------------------------------------
@@ -9,12 +11,28 @@ Prophet and Optuna‑tuned XGBoost), and generates trading signals with risk and
 It also integrates alternative sentiment data (Twitter/Reddit) with heavy weighting and
 retrieves quarterly financials.
 
-DISCLAIMER: This code is for educational purposes only. Thoroughly backtest and paper‑trade before using live capital.
-"""
 
-##############################
-# IMPORTS & CONFIGURATION
-##############################
+Required packages (install in Colab using pip):
+
+Also, run the following once to download required NLTK data:
+
+"""
+# Upgrade numpy to a compatible version
+
+# First, uninstall the current numpy version
+
+
+# Uninstall the current numpy version
+
+
+
+# Installations
+!pip uninstall -y numpy pandas tensorflow
+!pip install numpy==1.26.0 pandas==2.2.2
+!pip install tensorflow==2.18.0
+!pip install yfinance prophet scikit-learn xgboost optuna matplotlib seaborn nltk tweepy praw pyngrok altair blinker cachetools click protobuf pyarrow tenacity toml watchdog gitpython pandas_datareader
+
+# Imports
 import os
 import sys
 import logging
@@ -29,6 +47,9 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+print(f"NumPy version: {np.__version__}")
+print(f"Pandas version: {pd.__version__}")
+print(f"TensorFlow version: {tf.__version__}")
 # Machine learning and modeling libraries
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
 from sklearn.ensemble import RandomForestRegressor
@@ -40,10 +61,10 @@ from prophet import Prophet
 import pandas_datareader.data as web
 import optuna
 
+
 # For sentiment analysis
-import nltk
-nltk.download('vader_lexicon')
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
 
 # For Twitter API using Tweepy (v4)
 import tweepy
@@ -52,12 +73,9 @@ twitter_client = tweepy.Client(bearer_token=TWITTER_BEARER_TOKEN)
 
 # For Reddit API using PRAW
 import praw
-
-# For Streamlit UI
-import streamlit as st
-
-# This must be the very first Streamlit command!
-st.set_page_config(page_title="Investor‑Grade Options Trading Model", layout="wide")
+REDDIT_CLIENT_ID = "YJnhW_FkwbvXBWL-5rQohA"
+REDDIT_CLIENT_SECRET = "coyMlkxWQEaHG5MoRMOX4JtXc300sg"
+REDDIT_USER_AGENT = "coopersstockai"
 
 # Set up logging
 logging.basicConfig(
@@ -69,17 +87,12 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
 sys.setrecursionlimit(15000)
 
-# API KEYS – for production, store these securely
+# API KEYS – (Make sure to secure these in production)
 POLYGON_API_KEY = "bbYmszAdyJRvANl6FqHgoBkWU3hfhHJT"
 TWITTER_API_KEY = "YkdXUykzmRdk7sqMF9LvtE1pp"
 TWITTER_API_SECRET = "uzZ4ic2jCnZGYx1BeNrnYr044yjT1TB1bGF4i8rvfDq6YuujQA"
-REDDIT_CLIENT_ID = "YJnhW_FkwbvXBWL-5rQohA"
-REDDIT_CLIENT_SECRET = "coyMlkxWQEaHG5MoRMOX4JtXc300sg"
-REDDIT_USER_AGENT = "coopersstockai"
 
-##############################
 # GLOBAL CONSTANTS & WATCHLIST
-##############################
 FEATURE_COLS: List[str] = [
     "Rolling_Mean", "Rolling_Std", "EMA_10", "Momentum", "RSI",
     "SMA_50", "SMA_200", "MACD", "Bollinger_Upper", "Bollinger_Lower",
@@ -91,20 +104,17 @@ FEATURE_COLS: List[str] = [
     "Daily_Return"
 ]
 
-# HOT_TICKERS: A sample watchlist of 500+ stocks. (This is a partial list—you should expand it as needed)
 HOT_TICKERS: List[str] = [
     "AAPL", "MSFT", "AMZN", "TSLA", "GOOGL", "GOOG", "META", "NVDA", "NFLX", "ADBE",
     "INTC", "AMD", "CRM", "PYPL", "QCOM", "AVGO", "TXN", "CSCO", "ORCL", "IBM",
     "NOW", "SHOP", "SQ", "ZM", "DOCU", "UBER", "LYFT", "SNOW", "CRWD", "NET",
     "FSLY", "PLTR", "SPOT", "RBLX", "WORK", "VRTX", "BIIB", "GME", "AMC", "BBBY",
     "SBUX", "DIS", "XOM", "CVX", "COP", "BP", "SLB", "LNG", "DUK", "NEE", "D", "SO",
-    # ... (add more tickers to reach 500+)
+    # ... (add more tickers as needed)
 ]
 logger.info(f"Total HOT_TICKERS in watchlist: {len(HOT_TICKERS)}")
 
-##############################
-# TICKER RETRIEVAL FUNCTIONS
-##############################
+# ----- REAL IMPLEMENTATIONS -----
 def get_sp500_tickers() -> List[str]:
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
@@ -116,9 +126,6 @@ def get_sp500_tickers() -> List[str]:
         logger.error(f"Error retrieving S&P 500 tickers: {e}")
         return []
 
-##############################
-# SENTIMENT FUNCTIONS
-##############################
 def get_twitter_sentiment(ticker: str) -> float:
     try:
         query = f"${ticker} -is:retweet lang:en"
@@ -257,9 +264,7 @@ def fetch_yahoo_trending_tickers() -> List[str]:
         logger.warning(f"Error fetching Yahoo trending tickers: {e}. Using fallback list.")
         return ["AAPL", "MSFT", "AMZN", "TSLA", "GOOGL"]
 
-##############################
-# TECHNICAL & FEATURE ENGINEERING FUNCTIONS
-##############################
+# ----- TECHNICAL & FEATURE ENGINEERING FUNCTIONS -----
 def sanitize_close_column(df: pd.DataFrame) -> pd.DataFrame:
     if "Close" not in df.columns:
         raise ValueError("Missing 'Close' column before rolling feature generation.")
@@ -273,6 +278,15 @@ def add_macro_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["Interest_Rate"] = 5.25
     df["Inflation_Rate"] = 3.2
     return df
+
+import requests
+import pandas as pd
+import logging
+
+# Set up logger for debugging
+logger = logging.getLogger(__name__)
+
+POLYGON_API_KEY = "bbYmszAdyJRvANl6FqHgoBkWU3hfhHJT"
 
 def get_stock_prices(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
     url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}"
@@ -295,6 +309,27 @@ def get_stock_prices(ticker: str, start_date: str, end_date: str) -> pd.DataFram
     except Exception as e:
         logger.error(f"Error fetching stock prices from Polygon for {ticker}: {e}")
         return pd.DataFrame()
+
+def get_prices_for_tickers(tickers: list, start_date: str, end_date: str) -> dict:
+    tickers_data = {}
+    for ticker in tickers:
+        tickers_data[ticker] = get_stock_prices(ticker, start_date, end_date)
+    return tickers_data
+
+# Example: List of 5 tickers
+tickers = ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"]
+
+# Example: Date range for fetching data
+start_date = "2016-01-01"
+end_date = "2018-12-31"
+
+# Fetch prices for all tickers
+tickers_data = get_prices_for_tickers(tickers, start_date, end_date)
+
+# Example: Print the data for each ticker
+for ticker, data in tickers_data.items():
+    print(f"\n{ticker} Data:\n", data.head())  # Print first 5 rows for each ticker
+
 
 def add_vix_indicator(df: pd.DataFrame) -> pd.DataFrame:
     start_date = df.index[0] - pd.DateOffset(days=1)
@@ -416,9 +451,7 @@ def prepare_prophet_data(df: pd.DataFrame) -> pd.DataFrame:
     cols = ["ds", "y"] + [c for c in df_fe.columns if c not in ["ds", "y"]]
     return df_fe[cols]
 
-##############################
-# INVESTOR‑GRADE ENHANCEMENTS (OPTIONS & SENTIMENT)
-##############################
+# ----- OPTIONS & SENTIMENT FUNCTIONS -----
 def calculate_strike(current_price: float, predicted_return: float, trade_type: str) -> float:
     if trade_type == "CALL":
         strike_percentage = 0.05
@@ -504,9 +537,7 @@ def compute_options_parameters(future_forecast: pd.DataFrame, ticker: str) -> Di
         "resistance_level": resistance_level
     }
 
-##############################
-# MODEL TRAINING & PREDICTION FUNCTIONS
-##############################
+# ----- MODEL TRAINING & PREDICTION FUNCTIONS -----
 def tune_xgboost_optuna(X: np.ndarray, y: np.ndarray) -> XGBRegressor:
     split = int(len(X) * 0.8)
     X_train, X_val = X[:split], X[split:]
@@ -572,6 +603,7 @@ def train_models_updated(df: pd.DataFrame) -> Tuple[Dict[str, Any], Prophet, Dic
     return trained_models, prophet_model, scaler_params
 
 def compute_model_weights_with_cv(models: Dict[str, Any], X: np.ndarray, y: np.ndarray, n_splits: int = 3) -> Dict[str, float]:
+    from sklearn.model_selection import TimeSeriesSplit
     cv = TimeSeriesSplit(n_splits=n_splits)
     errors = {name: [] for name in models}
     for train_idx, val_idx in cv.split(X):
@@ -625,7 +657,7 @@ def train_ensemble_models(df: pd.DataFrame) -> Tuple[Dict[str, Any], Prophet, Di
         prophet_model.add_regressor("Rolling_Mean")
         prophet_model.add_regressor("Rolling_Std")
     prophet_model.fit(df_prophet)
-    
+
     return trained_models, prophet_model, scaler_params
 
 def align_and_scale_features(features_df: pd.DataFrame, scaler_params: Dict[str, Any]) -> np.ndarray:
@@ -669,139 +701,54 @@ def predict_stock_price_updated(df: pd.DataFrame, models: Dict[str, Any], prophe
     forecast_prices = last_close * np.exp(cumulative_returns)
     return pd.DataFrame({"Ensemble": forecast_prices}, index=future_dates)
 
-##############################
-# OPTIONS SIGNAL FUNCTIONS
-##############################
-def generate_trade_type(alt_sentiment: float) -> str:
-    return "CALL" if alt_sentiment > 0.1 else "PUT"
-
-def generate_trade_type_improved(predicted_return: float, alt_sentiment: float, volatility: float) -> str:
-    combined_score = predicted_return + alt_sentiment
-    if combined_score > 0.03 + (volatility * 0.1):
-        return "CALL"
-    elif combined_score < -0.03 - (volatility * 0.1):
-        return "PUT"
-    else:
-        return "NEUTRAL"
-
-def calculate_strike(current_price: float, predicted_return: float, trade_type: str) -> float:
-    if trade_type == "CALL":
-        strike_percentage = 0.05
-    elif trade_type == "PUT":
-        strike_percentage = -0.05
-    else:
-        strike_percentage = 0
-    return round(current_price * (1 + strike_percentage), 2)
-
-def get_options_chain(ticker: str) -> List[Dict[str, Any]]:
-    t = yf.Ticker(ticker)
-    exps = t.options
-    if not exps:
-        return []
-    expiration = exps[0]
-    chain = t.option_chain(expiration)
-    options = []
-    for idx, row in chain.calls.iterrows():
-        row_dict = row.to_dict()
-        row_dict["type"] = "CALL"
-        row_dict["expiration_date"] = expiration
-        options.append(row_dict)
-    for idx, row in chain.puts.iterrows():
-        row_dict = row.to_dict()
-        row_dict["type"] = "PUT"
-        row_dict["expiration_date"] = expiration
-        options.append(row_dict)
-    return options
-
-def get_option_profit_certainty(trade_type: str, future_prices: pd.DataFrame, option: Dict[str, Any]) -> float:
-    from scipy.stats import norm
-    pred_return = (future_prices.iloc[-1]["Ensemble"] - future_prices.iloc[0]["Ensemble"]) / future_prices.iloc[0]["Ensemble"]
-    std_return = future_prices["Ensemble"].pct_change().std()
-    if std_return == 0:
-        std_return = 1e-9
-    z = pred_return / std_return
-    if trade_type == "CALL":
-        prob = norm.cdf(z)
-    elif trade_type == "PUT":
-        prob = 1 - norm.cdf(z)
-    else:
-        prob = 0.5
-    return prob
-
-def generate_options_signal(ticker: str, forecast_df: pd.DataFrame, alt_sentiment: float, threshold: float = 0.3) -> Tuple[bool, float, float, str]:
-    last_price = forecast_df.iloc[0]["Ensemble"]
-    predicted_price = forecast_df.iloc[-1]["Ensemble"]
-    predicted_return = (predicted_price - last_price) / last_price
-    combined_score = predicted_return + alt_sentiment
-    signal = combined_score > threshold
-    volatility = forecast_df["Ensemble"].pct_change().std()
-    trade_type = generate_trade_type_improved(predicted_return, alt_sentiment, volatility)
-    return signal, combined_score, predicted_return, trade_type
-
-def calculate_position_size(max_loss: float, account_balance: float = 1000, risk_per_trade: float = 0.02) -> float:
-    risk_amount = account_balance * risk_per_trade
-    return risk_amount / max_loss
-
-def compute_options_parameters(future_forecast: pd.DataFrame, ticker: str) -> Dict[str, Any]:
-    last_date = future_forecast.index[-1]
-    predicted_price = future_forecast.iloc[-1]["Ensemble"]
-    strike = round(predicted_price)
-    expiration_date = last_date.strftime("%Y-%m-%d")
-    delta = 0.5  # Placeholder value
-    profit_probability = 0.7  # Placeholder value
-    hold_duration = (future_forecast.index[-1] - future_forecast.index[0]).days
-    resistance_level = predicted_price * 1.05
-    return {
-        "strike": strike,
-        "expiration_date": expiration_date,
-        "delta": delta,
-        "profit_probability": profit_probability,
-        "hold_duration": hold_duration,
-        "resistance_level": resistance_level
-    }
-
-##############################
-# ANALYZE STOCK FUNCTION
-##############################
+# ----- ANALYZE STOCK FUNCTION -----
 def analyze_stock(ticker: str, training_start: str, forecast_days: int) -> Optional[Dict[str, Any]]:
     try:
-        # Forecast future prices using the ensemble models
-        future_prices = predict_future_stock_price(ticker, training_start, forecast_days)
-        
-        # Get combined alternative sentiment from Twitter and Reddit
-        alt_sent = aggregate_alternative_sentiment(ticker)
-        
-        # Calculate current and predicted prices, and compute predicted return
+        # Get predicted stock prices using the trained models
+        future_prices = predict_stock_price(ticker, training_start, forecast_days)
+
+        # No sentiment data (Twitter/Reddit) for this version
+        alt_sentiment = 0  # Set to 0 if not using alternative sentiment data
+
+        # Get the initial price and predicted price
         current_price = future_prices.iloc[0]["Ensemble"]
         predicted_price = future_prices.iloc[-1]["Ensemble"]
+
+        # Calculate the predicted return
         predicted_return = (predicted_price - current_price) / current_price
-        
-        # Estimate volatility from forecasted ensemble prices
+
+        # Calculate volatility
         volatility = future_prices["Ensemble"].pct_change().std()
-        
-        # Determine the trade type (CALL or PUT) based on technical return and sentiment
-        trade_type = generate_trade_type_improved(predicted_return, alt_sent, volatility)
+
+        # Generate the trade type based on predicted return, sentiment, and volatility
+        trade_type = generate_trade_type_improved(predicted_return, alt_sentiment, volatility)
+
         if trade_type == "NEUTRAL":
             return None
-        
-        # Calculate an appropriate strike price based on predicted return and trade type
+
+        # Calculate strike price for options using predicted price
         strike = calculate_strike(current_price, predicted_return, trade_type)
-        
-        # Retrieve the options chain for the ticker and filter valid options
+
+        # Get the options chain for the ticker
         options_chain = get_options_chain(ticker)
+
+        # Filter valid options based on strike price, type, and expiration date
         valid_options = [
-            opt for opt in options_chain 
+            opt for opt in options_chain
             if opt["type"] == trade_type and abs(opt["strike"] - strike) / current_price < 0.1
             and opt["expiration_date"] > datetime.today().strftime('%Y-%m-%d')
         ]
+
         if not valid_options:
             return None
-        
-        # Select the option with the lowest ask price
+
+        # Choose the option with the best price (based on ask price)
         option = min(valid_options, key=lambda x: x.get("ask") if x.get("ask") is not None else float('inf'))
+
+        # Calculate the probability of profit for the option
         profit_certainty = get_option_profit_certainty(trade_type, future_prices, option)
-        
-        # Create a dictionary with option details and analysis
+
+        # Collect all relevant details for the option
         option_details = {
             "contractSymbol": option.get("contractSymbol", ""),
             "strike": option.get("strike", ""),
@@ -814,14 +761,14 @@ def analyze_stock(ticker: str, training_start: str, forecast_days: int) -> Optio
             "expiration": option.get("expiration_date", ""),
             "profitCertainty": round(profit_certainty * 100, 2)
         }
-        combined_score = predicted_return + alt_sent
-        
+
+        # Return the final result
         return {
             "ticker": ticker,
             "future_prices": future_prices,
-            "alt_sent": alt_sent,
+            "alt_sent": alt_sentiment,
             "signal": True,
-            "combined_score": combined_score,
+            "combined_score": predicted_return + alt_sentiment,
             "predicted_return": predicted_return,
             "option_params": option_details,
             "trade_type": trade_type
@@ -830,7 +777,7 @@ def analyze_stock(ticker: str, training_start: str, forecast_days: int) -> Optio
         logger.error(f"Error analyzing {ticker}: {e}")
         return None
 
-def predict_future_stock_price(ticker: str, training_start: str, forecast_days: int = 7) -> pd.DataFrame:
+def predict_stock_price(ticker: str, training_start: str, forecast_days: int = 7) -> pd.DataFrame:
     end_date = datetime.today().strftime("%Y-%m-%d")
     df = get_stock_prices(ticker, training_start, end_date)
     if df.empty or "Close" not in df.columns or df["Close"].isna().all():
@@ -842,9 +789,7 @@ def predict_future_stock_price(ticker: str, training_start: str, forecast_days: 
     future_forecast = predict_stock_price_updated(df_fe, trained_models, prophet, scaler_params, periods=forecast_days)
     return future_forecast
 
-##############################
-# FINANCIAL STATEMENTS FUNCTIONS
-##############################
+# ----- FINANCIAL STATEMENTS FUNCTIONS (omitted for brevity; include as needed) -----
 def get_quarterly_financials(ticker: str, years: int = 5) -> pd.DataFrame:
     url = f"https://api.polygon.io/vX/reference/financials"
     params = {"ticker": ticker, "limit": years * 4, "timeframe": "quarterly", "apiKey": POLYGON_API_KEY}
@@ -917,11 +862,51 @@ def get_one_week_data(ticker: str) -> pd.DataFrame:
     df = yf.download(ticker, start=start_date, end=end_date, progress=False)
     return df
 
+# ----- MAIN FUNCTION FOR TERMINAL OUTPUT -----
+def main():
+    tickers = ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"]
+    training_start = "2020-01-01"
+    forecast_days = 7
+   
+
+
+    for ticker in tickers:
+        print(f"Analyzing {ticker}...")
+        try:
+            result = analyze_stock(ticker, training_start, forecast_days)
+        except Exception as ex:
+            print(f"Error analyzing {ticker}: {ex}")
+            continue
+
+        if result:
+            print(f"Ticker: {result['ticker']}")
+            print(f"Predicted Return: {result['predicted_return']:.2%}")
+            print(f"Trade Type: {result['trade_type']}")
+            if result['option_params']:
+                print("Option Recommendation:")
+                option = result['option_params']
+                print(f"  Contract Symbol: {option.get('contractSymbol', 'N/A')}")
+                print(f"  Strike: {option.get('strike', 'N/A')}")
+                print(f"  Last Price: {option.get('lastPrice', 'N/A')}")
+                print(f"  Bid: {option.get('bid', 'N/A')}")
+                print(f"  Ask: {option.get('ask', 'N/A')}")
+                print(f"  Expiration: {option.get('expiration', 'N/A')}")
+                print(f"  Profit Certainty: {option.get('profitCertainty', 'N/A')}%")
+            else:
+                print("No valid options recommendation found.")
+        else:
+            print(f"No analysis result for {ticker}.")
+        print("-" * 50)
+
+if __name__ == "__main__":
+    main()
+
+
 ##############################
 # STREAMLIT APP & NAVIGATION
 ##############################
 # (If you need to clear query parameters, you can use st.query_params directly)
-query_params = st.query_params
+'''query_params = st.query_params
 
 # (Note: st.set_page_config was already called at the top of the file.)
 
