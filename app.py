@@ -11,24 +11,11 @@ Prophet and Optuna‑tuned XGBoost), and generates trading signals with risk and
 It also integrates alternative sentiment data (Twitter/Reddit) with heavy weighting and
 retrieves quarterly financials.
 
-
-Required packages (install in Colab using pip):
-
-Also, run the following once to download required NLTK data:
-
 """
-# Upgrade numpy to a compatible version
-
-# First, uninstall the current numpy version
-
-
-# Uninstall the current numpy version
 
 
 
-# Installations
 
-!pip install -r requirements.txt
 # Imports
 import os
 import sys
@@ -37,16 +24,15 @@ import warnings
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple, Optional
 
+
 import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
+import json
 
-print(f"NumPy version: {np.__version__}")
-print(f"Pandas version: {pd.__version__}")
-print(f"TensorFlow version: {tf.__version__}")
 # Machine learning and modeling libraries
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
 from sklearn.ensemble import RandomForestRegressor
@@ -57,7 +43,8 @@ from xgboost import XGBRegressor
 from prophet import Prophet
 import pandas_datareader.data as web
 import optuna
-
+from polygon import RESTClient
+import re
 
 # For sentiment analysis
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
@@ -68,6 +55,10 @@ import tweepy
 TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "YOUR_TWITTER_BEARER_TOKEN")
 twitter_client = tweepy.Client(bearer_token=TWITTER_BEARER_TOKEN)
 
+POLYGON_API_KEY = "bbYmszAdyJRvANl6FqHgoBkWU3hfhHJT"
+from polygon import RESTClient
+
+polygon_client = RESTClient(POLYGON_API_KEY)
 # For Reddit API using PRAW
 import praw
 REDDIT_CLIENT_ID = "YJnhW_FkwbvXBWL-5rQohA"
@@ -102,12 +93,7 @@ FEATURE_COLS: List[str] = [
 ]
 
 HOT_TICKERS: List[str] = [
-    "AAPL", "MSFT", "AMZN", "TSLA", "GOOGL", "GOOG", "META", "NVDA", "NFLX", "ADBE",
-    "INTC", "AMD", "CRM", "PYPL", "QCOM", "AVGO", "TXN", "CSCO", "ORCL", "IBM",
-    "NOW", "SHOP", "SQ", "ZM", "DOCU", "UBER", "LYFT", "SNOW", "CRWD", "NET",
-    "FSLY", "PLTR", "SPOT", "RBLX", "WORK", "VRTX", "BIIB", "GME", "AMC", "BBBY",
-    "SBUX", "DIS", "XOM", "CVX", "COP", "BP", "SLB", "LNG", "DUK", "NEE", "D", "SO",
-    # ... (add more tickers as needed)
+    "TWI","KMT","ATI","CMC","NUE"
 ]
 logger.info(f"Total HOT_TICKERS in watchlist: {len(HOT_TICKERS)}")
 
@@ -171,11 +157,10 @@ def aggregate_alternative_sentiment(ticker: str, twitter_weight: float = 2.0, re
     reddit_score = get_reddit_sentiment(ticker)
     combined = (twitter_weight * twitter_score + reddit_weight * reddit_score) / (twitter_weight + reddit_weight)
     logger.info(f"Combined sentiment for {ticker}: {combined}")
-    return combined
 
 def fetch_all_news(api_key: str, limit: int = 50) -> List[Dict[str, Any]]:
-    url = "https://api.polygon.io/v2/reference/news"
-    params = {"limit": limit, "apiKey": api_key}
+    url = f"https://api.polygon.io/vX/reference/financials"
+    params = {"limit": limit, "apiKey": POLYGON_API_KEY}
     try:
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
@@ -285,6 +270,19 @@ logger = logging.getLogger(__name__)
 
 POLYGON_API_KEY = "bbYmszAdyJRvANl6FqHgoBkWU3hfhHJT"
 
+def get_optimal_expiration_date(predicted_volatility: float, forecast_days: int) -> str:
+    """
+    Get the expiration date based on forecast volatility and predicted market movement.
+    """
+    # Calculate optimal expiration in days (e.g., 30 days ahead for significant movement)
+    optimal_expiration = forecast_days + int(predicted_volatility * 15)  # Adjust multiplier for preferred time window
+    
+    # Ensure that the expiration date is at least a week out
+    optimal_expiration = max(optimal_expiration, 7)  # Minimum of 7 days for time decay consideration
+    
+    expiration_date = (datetime.today() + timedelta(days=optimal_expiration)).strftime("%Y-%m-%d")
+    return expiration_date
+
 def get_stock_prices(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
     url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}"
     params = {"adjusted": "true", "sort": "asc", "limit": 5000, "apiKey": POLYGON_API_KEY}
@@ -314,7 +312,7 @@ def get_prices_for_tickers(tickers: list, start_date: str, end_date: str) -> dic
     return tickers_data
 
 # Example: List of 5 tickers
-tickers = ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"]
+tickers = HOT_TICKERS
 
 # Example: Date range for fetching data
 start_date = "2016-01-01"
@@ -466,13 +464,28 @@ def generate_trade_type_improved(predicted_return: float, alt_sentiment: float, 
         return "PUT"
     else:
         return "NEUTRAL"
+    
+def get_optimal_expiration_date(predicted_volatility: float, forecast_days: int) -> str:
+    optimal_expiration = forecast_days + int(predicted_volatility * 15)  # Adjust multiplier for preferred time window
+    
+  
+    optimal_expiration = max(optimal_expiration, 7)  # Minimum of 7 days for time decay consideration
+    
+    expiration_date = (datetime.today() + timedelta(days=optimal_expiration)).strftime("%Y-%m-%d")
+    return expiration_date
 
-def get_options_chain(ticker: str) -> List[Dict[str, Any]]:
+def get_options_chain(ticker: str, forecast_days: int, predicted_volatility: float) -> List[Dict[str, Any]]:
     t = yf.Ticker(ticker)
     exps = t.options
     if not exps:
         return []
-    expiration = exps[0]
+    
+    # Get the optimal expiration date based on the volatility and forecast days
+    expiration_date = get_optimal_expiration_date(predicted_volatility, forecast_days)
+    
+    # Find the closest available expiration date that matches
+    expiration = min(exps, key=lambda exp: abs((datetime.strptime(exp, "%Y-%m-%d") - datetime.strptime(expiration_date, "%Y-%m-%d")).days))
+    
     chain = t.option_chain(expiration)
     options = []
     for idx, row in chain.calls.iterrows():
@@ -485,22 +498,9 @@ def get_options_chain(ticker: str) -> List[Dict[str, Any]]:
         row_dict["type"] = "PUT"
         row_dict["expiration_date"] = expiration
         options.append(row_dict)
+    
     return options
 
-def get_option_profit_certainty(trade_type: str, future_prices: pd.DataFrame, option: Dict[str, Any]) -> float:
-    from scipy.stats import norm
-    pred_return = (future_prices.iloc[-1]["Ensemble"] - future_prices.iloc[0]["Ensemble"]) / future_prices.iloc[0]["Ensemble"]
-    std_return = future_prices["Ensemble"].pct_change().std()
-    if std_return == 0:
-        std_return = 1e-9
-    z = pred_return / std_return
-    if trade_type == "CALL":
-        prob = norm.cdf(z)
-    elif trade_type == "PUT":
-        prob = 1 - norm.cdf(z)
-    else:
-        prob = 0.5
-    return prob
 
 def generate_options_signal(ticker: str, forecast_df: pd.DataFrame, alt_sentiment: float, threshold: float = 0.3) -> Tuple[bool, float, float, str]:
     last_price = forecast_df.iloc[0]["Ensemble"]
@@ -553,10 +553,16 @@ def tune_xgboost_optuna(X: np.ndarray, y: np.ndarray) -> XGBRegressor:
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         preds = model.predict(X_val)
         return np.mean(np.abs(y_val - preds))
-
+    
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(direction="minimize")
-    study.optimize(optuna_objective, n_trials=50, show_progress_bar=False)
+    study.optimize(optuna_objective, n_trials=100, show_progress_bar=True)
     best_params = study.best_trial.params
+    logging.basicConfig(
+    level=logging.WARNING,  # Change from INFO to WARNING to suppress info logs
+    format="%(asctime)s %(levelname)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
     logger.info(f"Optuna best XGBoost params: {best_params}")
     return XGBRegressor(**best_params, random_state=42)
 
@@ -714,8 +720,11 @@ def analyze_stock(ticker: str, training_start: str, forecast_days: int) -> Optio
         # Calculate the predicted return
         predicted_return = (predicted_price - current_price) / current_price
 
-        # Calculate volatility
+        # Calculate volatility based on predicted prices
         volatility = future_prices["Ensemble"].pct_change().std()
+
+        # Get options chain with the new expiration date logic (based on volatility and forecast_days)
+        options_chain = get_options_chain(ticker, forecast_days, volatility)
 
         # Generate the trade type based on predicted return, sentiment, and volatility
         trade_type = generate_trade_type_improved(predicted_return, alt_sentiment, volatility)
@@ -725,9 +734,6 @@ def analyze_stock(ticker: str, training_start: str, forecast_days: int) -> Optio
 
         # Calculate strike price for options using predicted price
         strike = calculate_strike(current_price, predicted_return, trade_type)
-
-        # Get the options chain for the ticker
-        options_chain = get_options_chain(ticker)
 
         # Filter valid options based on strike price, type, and expiration date
         valid_options = [
@@ -774,6 +780,8 @@ def analyze_stock(ticker: str, training_start: str, forecast_days: int) -> Optio
         logger.error(f"Error analyzing {ticker}: {e}")
         return None
 
+
+
 def predict_stock_price(ticker: str, training_start: str, forecast_days: int = 7) -> pd.DataFrame:
     end_date = datetime.today().strftime("%Y-%m-%d")
     df = get_stock_prices(ticker, training_start, end_date)
@@ -786,271 +794,290 @@ def predict_stock_price(ticker: str, training_start: str, forecast_days: int = 7
     future_forecast = predict_stock_price_updated(df_fe, trained_models, prophet, scaler_params, periods=forecast_days)
     return future_forecast
 
-# ----- FINANCIAL STATEMENTS FUNCTIONS (omitted for brevity; include as needed) -----
-def get_quarterly_financials(ticker: str, years: int = 5) -> pd.DataFrame:
+def get_option_profit_certainty(trade_type: str, future_prices: pd.DataFrame, option: Dict[str, Any]) -> float:
+    from scipy.stats import norm
+    # Calculate the predicted return
+    pred_return = (future_prices.iloc[-1]["Ensemble"] - future_prices.iloc[0]["Ensemble"]) / future_prices.iloc[0]["Ensemble"]
+    # Calculate the standard deviation of the returns
+    std_return = future_prices["Ensemble"].pct_change().std()
+    
+    if std_return == 0:
+        std_return = 1e-9  # Prevent division by zero
+    
+    # Calculate Z-score
+    z = pred_return / std_return
+    
+    # Calculate the probability based on the trade type
+    if trade_type == "CALL":
+        prob = norm.cdf(z)
+    elif trade_type == "PUT":
+        prob = 1 - norm.cdf(z)
+    else:
+        prob = 0.5  # Neutral position has a 50% probability
+    
+    return prob
+
+def fetch_all_news(api_key: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Retrieve financial news articles via Polygon.
+    """
     url = f"https://api.polygon.io/vX/reference/financials"
-    params = {"ticker": ticker, "limit": years * 4, "timeframe": "quarterly", "apiKey": POLYGON_API_KEY}
-    r = requests.get(url, params=params)
-    data = r.json()
-    if r.status_code != 200 or "results" not in data:
+    params = {"limit": limit, "apiKey": api_key}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("results", [])
+    except Exception as e:
+        logger.error(f"Error fetching news from Polygon: {e}")
+        return []
+
+def get_quarterly_financials(ticker: str, years: int = 4) -> pd.DataFrame:
+    """
+    Retrieves quarterly financial filings for the specified ticker using Polygon's RESTClient.
+    Only returns filings with filing dates ≥ (today - years).
+    """
+    start_date = (datetime.today() - pd.DateOffset(years=years)).strftime("%Y-%m-%d")
+    financials = []
+    try:
+        for filing in polygon_client.vx.list_stock_financials(
+            ticker=ticker.upper(),
+            timeframe="quarterly",
+            order="asc",
+            limit=str(years * 4),
+            sort="filing_date",
+            filing_date_gte=start_date,
+            include_sources="true"
+        ):
+            financials.append(filing)
+    except Exception as e:
+        logger.error(f"Error retrieving financials for {ticker}: {e}")
         return pd.DataFrame()
+
     financials_list = []
-    for entry in data["results"]:
-        inc = entry.get("financials", {}).get("income_statement", {})
-        bal = entry.get("financials", {}).get("balance_sheet", {})
-        rd_val = inc.get("research_and_development", {}).get("value") if "research_and_development" in inc else None
-        financials_list.append({
-            "Quarter": f"{entry.get('fiscal_period', 'Unknown')} {entry.get('fiscal_year', 'Unknown')}",
-            "Filing Date": entry.get("filing_date", "N/A"),
-            "Revenue": inc.get("revenues", {}).get("value"),
-            "Net Income": inc.get("net_income_loss", {}).get("value"),
-            "Gross Profit": inc.get("gross_profit", {}).get("value"),
-            "R&D": rd_val,
-            "Equity": bal.get("equity", {}).get("value"),
-            "Assets": bal.get("assets", {}).get("value")
-        })
+    for entry in financials:
+        try:
+            fiscal_period = getattr(entry, "fiscal_period", "Unknown")
+            fiscal_year = getattr(entry, "fiscal_year", "Unknown")
+            filing_date = getattr(entry, "filing_date", None)
+            fin = getattr(entry, "financials", None)
+            income_statement = getattr(fin, "income_statement", None) if fin else None
+            balance_sheet = getattr(fin, "balance_sheet", None) if fin else None
+
+            revenue = getattr(getattr(income_statement, "revenues", {}), "value", None) if income_statement else None
+            net_income = getattr(getattr(income_statement, "net_income_loss", {}), "value", None) if income_statement else None
+            gross_profit = getattr(getattr(income_statement, "gross_profit", {}), "value", None) if income_statement else None
+            rnd = getattr(getattr(income_statement, "research_and_development", {}), "value", None) if income_statement else None
+            equity = getattr(getattr(balance_sheet, "equity", {}), "value", None) if balance_sheet else None
+            assets = getattr(getattr(balance_sheet, "assets", {}), "value", None) if balance_sheet else None
+
+            financials_list.append({
+                "Quarter": f"{fiscal_period} {fiscal_year}",
+                "Filing Date": filing_date if filing_date is not None else "N/A",
+                "Revenue": revenue,
+                "Net Income": net_income,
+                "Gross Profit": gross_profit,
+                "R&D": rnd,
+                "Equity": equity,
+                "Assets": assets
+            })
+        except Exception as ex:
+            logger.error(f"Error processing financial data for {ticker}: {ex}")
+            continue
+
     return pd.DataFrame(financials_list)
 
 def compute_qoq_growth(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Computes quarter-over-quarter growth and margin metrics.
+    Assumes that the input DataFrame is sorted by quarter (ascending).
+    Returns a DataFrame including growth metrics.
+    """
     try:
         df["Filing Date"] = df["Filing Date"].replace("N/A", np.nan)
         df = df.dropna(subset=["Filing Date"]).copy()
-        df["Filing Date"] = pd.to_datetime(df["Filing Date"], errors="coerce")
+        df["Filing Date"] = pd.to_datetime(df["Filing Date"], errors="coerce", infer_datetime_format=True)
+        if df["Filing Date"].isna().all():
+            logger.warning("⚠️ All filing dates could not be converted!")
+            return pd.DataFrame()
         df["Quarter"] = df["Filing Date"].dt.to_period("Q")
         df = df.dropna(subset=["Quarter"]).sort_values("Quarter")
         if "Revenue" not in df.columns or "Net Income" not in df.columns:
+            logger.warning("⚠️ Essential financial metrics are missing.")
             return pd.DataFrame()
         df["Revenue Growth (%)"] = df["Revenue"].pct_change() * 100
         df["Net Income Growth (%)"] = df["Net Income"].pct_change() * 100
-        if "Gross Profit" in df.columns and df["Gross Profit"].notna().any():
-            df["Gross Margin (%)"] = (df["Gross Profit"] / df["Revenue"]) * 100
-        else:
-            df["Gross Margin (%)"] = np.nan
-        if "R&D" in df.columns and df["R&D"].notna().any():
-            df["R&D as % of Revenue"] = (df["R&D"] / df["Revenue"]) * 100
-            df["R&D Growth (%)"] = df["R&D"].pct_change() * 100
-        else:
-            df["R&D as % of Revenue"] = np.nan
-            df["R&D Growth (%)"] = np.nan
-        if "Equity" in df.columns and df["Equity"].notna().any():
-            df["ROE (%)"] = (df["Net Income"] / df["Equity"]) * 100
-        else:
-            df["ROE (%)"] = np.nan
-        if "Assets" in df.columns and df["Assets"].notna().any():
-            df["ROA (%)"] = (df["Net Income"] / df["Assets"]) * 100
-        else:
-            df["ROA (%)"] = np.nan
-        return df[["Quarter", "Revenue", "Net Income", "Gross Profit", "R&D",
-                   "Revenue Growth (%)", "Net Income Growth (%)", "Gross Margin (%)",
-                   "R&D as % of Revenue", "R&D Growth (%)", "ROE (%)", "ROA (%)"]]
-    except Exception:
+        df["Gross Margin (%)"] = (df["Gross Profit"] / df["Revenue"]) * 100 if "Gross Profit" in df.columns else np.nan
+        df["ROE (%)"] = (df["Net Income"] / df["Equity"]) * 100 if "Equity" in df.columns else np.nan
+        df["ROA (%)"] = (df["Net Income"] / df["Assets"]) * 100 if "Assets" in df.columns else np.nan
+        return df[["Quarter", "Revenue Growth (%)", "Net Income Growth (%)", "Gross Margin (%)", "ROE (%)", "ROA (%)"]]
+    except Exception as e:
+        logger.error(f"Error computing quarter-over-quarter growth: {e}")
         return pd.DataFrame()
 
-def get_quarterly_financials_safe(ticker: str, years: int = 5, retries: int = 3) -> Optional[pd.DataFrame]:
+def get_quarterly_financials_safe(ticker: str, years: int = 4, retries: int = 3) -> Optional[pd.DataFrame]:
     for _ in range(retries):
         df = get_quarterly_financials(ticker, years)
         if not df.empty:
             return df
+    logger.warning(f"⚠️ Data missing for {ticker}, using sector estimates.")
     return None
 
-def get_one_week_data(ticker: str) -> pd.DataFrame:
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=7)
-    df = yf.download(ticker, start=start_date, end=end_date, progress=False)
-    return df
-
-# ----- MAIN FUNCTION FOR TERMINAL OUTPUT -----
 def main():
-    tickers = ["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN"]
-    training_start = "2020-01-01"
+    tickers = HOT_TICKERS  # Assumes HOT_TICKERS is defined globally
+    training_start = "2023-01-01"
     forecast_days = 7
-   
-
 
     for ticker in tickers:
-        print(f"Analyzing {ticker}...")
+        print("=" * 50)
+        print(f"Processing ticker: {ticker}\n")
+        
+        # --- Options Analysis Section ---
         try:
             result = analyze_stock(ticker, training_start, forecast_days)
-        except Exception as ex:
-            print(f"Error analyzing {ticker}: {ex}")
-            continue
-
-        if result:
-            print(f"Ticker: {result['ticker']}")
-            print(f"Predicted Return: {result['predicted_return']:.2%}")
-            print(f"Trade Type: {result['trade_type']}")
-            if result['option_params']:
-                print("Option Recommendation:")
-                option = result['option_params']
-                print(f"  Contract Symbol: {option.get('contractSymbol', 'N/A')}")
-                print(f"  Strike: {option.get('strike', 'N/A')}")
-                print(f"  Last Price: {option.get('lastPrice', 'N/A')}")
-                print(f"  Bid: {option.get('bid', 'N/A')}")
-                print(f"  Ask: {option.get('ask', 'N/A')}")
-                print(f"  Expiration: {option.get('expiration', 'N/A')}")
-                print(f"  Profit Certainty: {option.get('profitCertainty', 'N/A')}%")
+            if result:
+                print(f"Ticker: {result['ticker']}")
+                print(f"Predicted Return: {result['predicted_return']:.2%}")
+                print(f"Trade Type: {result['trade_type']}")
+                if result.get('option_params'):
+                    option = result['option_params']
+                    print("Option Recommendation:")
+                    print(f"  Contract Symbol: {option.get('contractSymbol', 'N/A')}")
+                    print(f"  Strike: {option.get('strike', 'N/A')}")
+                    print(f"  Last Price: {option.get('lastPrice', 'N/A')}")
+                    print(f"  Bid: {option.get('bid', 'N/A')}")
+                    print(f"  Ask: {option.get('ask', 'N/A')}")
+                    print(f"  Expiration: {option.get('expiration', 'N/A')}")
+                    print(f"  Profit Certainty: {option.get('profitCertainty', 'N/A')}%")
+                else:
+                    print("No valid options recommendation found.")
             else:
-                print("No valid options recommendation found.")
-        else:
-            print(f"No analysis result for {ticker}.")
-        print("-" * 50)
+                print(f"No analysis result for {ticker}.")
+        except Exception as ex:
+            print(f"Error analyzing options for {ticker}: {ex}")
 
+        # --- News & Financial Analysis Section ---
+        try:
+            # Get company name for more robust news filtering
+            company_name = ""
+            try:
+                ticker_info = yf.Ticker(ticker).info
+                company_name = ticker_info.get("longName", "").upper()
+            except Exception as e:
+                logger.error(f"Could not fetch company name for {ticker}: {e}")
+
+            # Retrieve and filter news articles
+            news_summary = ""
+            try:
+                news_articles = fetch_all_news(POLYGON_API_KEY, limit=10)
+                combined_text = lambda article: (article.get("title", "") + " " + article.get("summary", "")).upper()
+                relevant_news = [
+                    article for article in news_articles
+                    if (f"${ticker.upper()}" in combined_text(article))
+                       or (ticker.upper() in combined_text(article))
+                       or (company_name and company_name in combined_text(article))
+                ]
+                if relevant_news:
+                    news_headlines = [article.get("title", "N/A") for article in relevant_news]
+                    news_summary = "Recent headlines include: " + "; ".join(news_headlines) + "."
+                else:
+                    news_summary = f"No relevant news found for {ticker}."
+            except Exception as ne:
+                news_summary = f"Error fetching news: {ne}"
+
+            # Retrieve and compute financial growth metrics with enhanced narrative
+            financial_summary = ""
+            try:
+                financials = get_quarterly_financials_safe(ticker, years=2)
+                if financials is not None and not financials.empty:
+                    growth_data = compute_qoq_growth(financials)
+                    if not growth_data.empty:
+                        # Use the most recent four quarters, if available
+                        last_four = growth_data if len(growth_data) < 4 else growth_data.iloc[-4:]
+
+                        # Compute averages for key growth metrics
+                        avg_rg = last_four["Revenue Growth (%)"].mean() if "Revenue Growth (%)" in last_four.columns else None
+                        avg_nig = last_four["Net Income Growth (%)"].mean() if "Net Income Growth (%)" in last_four.columns else None
+                        avg_gm = last_four["Gross Margin (%)"].mean() if "Gross Margin (%)" in last_four.columns else None
+                        avg_roa = last_four["ROA (%)"].mean() if "ROA (%)" in last_four.columns else None
+                        avg_roe = last_four["ROE (%)"].mean() if "ROE (%)" in last_four.columns else None
+
+                        # Compute annualized growth projections using compound growth over 4 quarters
+                        annual_rg = ((1 + avg_rg / 100) ** 4 - 1) * 100 if avg_rg is not None else None
+                        annual_nig = ((1 + avg_nig / 100) ** 4 - 1) * 100 if avg_nig is not None else None
+
+                        # Get the latest quarter's figures
+                        latest_quarter = growth_data.iloc[-1]
+                        latest_rg = latest_quarter.get("Revenue Growth (%)", None)
+                        latest_nig = latest_quarter.get("Net Income Growth (%)", None)
+                        latest_rg_str = f"{latest_rg:.2f}%" if (latest_rg is not None and pd.notna(latest_rg)) else "data not available"
+                        latest_nig_str = f"{latest_nig:.2f}%" if (latest_nig is not None and pd.notna(latest_nig)) else "data not available"
+
+                        # Start constructing the detailed narrative
+                        detailed_summary = (
+                            f"In the latest analysis over the past four quarters, {ticker} has demonstrated a moderate growth trajectory. "
+                            f"On average, revenue increased by {avg_rg:.2f}% per quarter and net income by {avg_nig:.2f}%. "
+                            f"In the most recent quarter ({latest_quarter['Quarter']}), revenue grew by {latest_rg_str} and net income by {latest_nig_str}. "
+                        )
+
+                        # Compare the latest quarter with previous quarters
+                        if len(last_four) > 1:
+                            previous_quarters = last_four.iloc[:-1]
+                            prev_avg_rg = previous_quarters["Revenue Growth (%)"].mean() if "Revenue Growth (%)" in previous_quarters.columns else None
+                            prev_avg_nig = previous_quarters["Net Income Growth (%)"].mean() if "Net Income Growth (%)" in previous_quarters.columns else None
+
+                            if prev_avg_rg is not None and latest_rg is not None:
+                                diff_rg = latest_rg - prev_avg_rg
+                                if diff_rg > 0:
+                                    detailed_summary += f"This represents an increase of {abs(diff_rg):.2f} percentage points over the previous average revenue growth. "
+                                else:
+                                    detailed_summary += f"Revenue growth has decreased by {abs(diff_rg):.2f} percentage points compared to the preceding quarters. "
+                            if prev_avg_nig is not None and latest_nig is not None:
+                                diff_nig = latest_nig - prev_avg_nig
+                                if diff_nig > 0:
+                                    detailed_summary += f"Notably, net income growth improved by {abs(diff_nig):.2f} percentage points relative to the previous average. "
+                                else:
+                                    detailed_summary += f"Net income growth declined by {abs(diff_nig):.2f} percentage points compared to the earlier quarters. "
+
+                        # Interpret the trajectory; for mature stocks, a 3% quarterly revenue gain is moderate.
+                        if avg_rg is not None:
+                            detailed_summary += (
+                                f"Although the average quarterly revenue growth of {avg_rg:.2f}% suggests steady performance, for a mature company like {ticker} "
+                                f"it is considered moderate rather than exceptionally robust. "
+                            )
+                        # Add long-term growth projections based on compound averages
+                        if annual_rg is not None and annual_nig is not None:
+                            detailed_summary += (
+                                f"If these performance levels persist, the estimated annualized revenue growth is {annual_rg:.2f}% and net income growth is {annual_nig:.2f}%. "
+                            )
+                        # Add additional financial health commentary
+                        if avg_gm is not None and not pd.isna(avg_gm):
+                            detailed_summary += f"Gross margin averaged {avg_gm:.2f}%, signifying stable production costs. "
+                        else:
+                            detailed_summary += "Gross margin data is not available. "
+                        if avg_roa is not None and avg_roe is not None and not (pd.isna(avg_roa) or pd.isna(avg_roe)):
+                            detailed_summary += (
+                                f"Profitability metrics (ROA and ROE) averaged {avg_roa:.2f}% and {avg_roe:.2f}%, respectively, reflecting effective asset utilization "
+                                "and solid shareholder returns. "
+                            )
+                        else:
+                            detailed_summary += "Profitability ratios (ROA/ROE) could not be fully determined. "
+
+                        financial_summary = detailed_summary
+                    else:
+                        financial_summary = f"No growth data available for {ticker}."
+                else:
+                    financial_summary = f"Financial data not available for {ticker}."
+            except Exception as fe:
+                financial_summary = f"Error fetching financial data: {fe}"
+
+            # Print the combined news and financial analysis summary for the ticker
+            print("\nAnalysis Summary:")
+            print(f"{ticker} analysis shows that {news_summary} {financial_summary}\n")
+        except Exception as e:
+            print(f"Error in financial news analysis for {ticker}: {e}")
+
+    print("=" * 50)
+    
 if __name__ == "__main__":
     main()
-
-
-##############################
-# STREAMLIT APP & NAVIGATION
-##############################
-# (If you need to clear query parameters, you can use st.query_params directly)
-'''query_params = st.query_params
-
-# (Note: st.set_page_config was already called at the top of the file.)
-
-page = st.sidebar.selectbox("Select Page", ["Market Scan", "Financial Statements"])
-
-# Sidebar: Option to use the full watchlist of HOT_TICKERS
-use_watchlist = st.sidebar.checkbox("Use full HOT_TICKERS watchlist (500+ stocks)", value=True)
-if use_watchlist:
-    st.sidebar.write("### Full Watchlist (Sample)")
-    st.sidebar.write(HOT_TICKERS[:20] + ["..."])
-
-##############################
-# MAIN APP LOGIC
-##############################
-if page == "Market Scan":
-    st.title("💡 Market Scan (1‑Week Forecast with Real Options & Profit Certainty)")
-    st.markdown("This scan ranks stocks using news, Yahoo trending data, and heavy alternative sentiment from Twitter and Reddit combined with technical analysis.")
-    if st.button("Run Market Scan"):
-        with st.spinner("Running market scan..."):
-            horizon = 7
-            training_start = "2018-01-01"
-            news_articles = fetch_all_news(POLYGON_API_KEY, limit=50)
-            news_tickers = rank_tickers_by_sentiment(news_articles, top_n=10)
-            yahoo_trending = fetch_yahoo_trending_tickers()
-            combined_tickers = list(set(news_tickers + yahoo_trending))
-            st.write("### Candidate Tickers")
-            st.write(combined_tickers)
-            results = []
-            for ticker in combined_tickers:
-                st.write(f"Analyzing {ticker}...")
-                res = analyze_stock(ticker, training_start, horizon)
-                if res:
-                    results.append(res)
-            if results:
-                results.sort(key=lambda x: x["combined_score"], reverse=True)
-                top_results = results[:5]
-                st.write("### Top 5 Options Trade Ideas")
-                cols = st.columns(5)
-                for idx, res in enumerate(top_results):
-                    ticker_str = res["ticker"]
-                    button_html = f"""
-                    <div style="background: linear-gradient(45deg, red, orange, yellow, green, blue, indigo, violet);
-                                -webkit-background-clip: text;
-                                -webkit-text-fill-color: transparent;
-                                font-weight: bold;
-                                font-size: 24px;
-                                cursor: pointer;"
-                         onclick="window.location.href='?selected_ticker={ticker_str}'">
-                         {ticker_str}
-                    </div>
-                    """
-                    cols[idx].markdown(button_html, unsafe_allow_html=True)
-                st.write("#### Detailed Options Trade Information for Top Pick")
-                top_option = top_results[0]["option_params"]
-                st.write(f"**Ticker:** {top_results[0]['ticker']}")
-                st.write(f"**Trade Type:** {top_results[0]['trade_type']}")
-                st.write(f"**Predicted Return (%):** {round(top_results[0]['predicted_return']*100,2)}")
-                st.write(f"**Strike:** {top_option.get('strike', '')}")
-                st.write(f"**Expiration:** {top_option.get('expiration', '')}")
-                st.write(f"**Profit Certainty (%):** {top_option.get('profitCertainty', '')}")
-                best_ticker = top_results[0]["ticker"]
-                st.write(f"### 1‑Week Chart for {best_ticker}")
-                one_week_df = get_one_week_data(best_ticker)
-                if not one_week_df.empty:
-                    st.line_chart(one_week_df["Close"])
-                else:
-                    st.warning(f"No 1‑week data found for {best_ticker}.")
-            else:
-                st.error("No valid stock analyses were generated from the market scan.")
-
-elif page == "Financial Statements":
-    selected_ticker = query_params.get("selected_ticker", [None])[0]
-    if selected_ticker:
-        st.title(f"📊 Financial Statements for {selected_ticker}")
-        st.markdown("Detailed quarterly financials and QoQ metrics for the selected ticker.")
-        if st.button("Back to Top 5"):
-            st.query_params({})  # Clear query parameters
-            st.experimental_rerun()
-        df_statements = get_quarterly_financials_safe(selected_ticker, years=5, retries=3)
-        if df_statements is None or df_statements.empty:
-            st.warning(f"No financial data found for {selected_ticker}.")
-        else:
-            st.write("### Raw Quarterly Financials")
-            st.dataframe(df_statements)
-            df_growth = compute_qoq_growth(df_statements)
-            if df_growth.empty:
-                st.warning("Could not compute QoQ growth metrics for these statements.")
-            else:
-                def color_positive(val):
-                    try:
-                        val = float(val)
-                    except:
-                        return ""
-                    color = "green" if val > 0 else "red"
-                    return f"color: {color}"
-                styled_df = df_growth.style.applymap(color_positive, subset=["Revenue Growth (%)", "Net Income Growth (%)", "R&D Growth (%)"])
-                st.write("### QoQ Growth & Metrics")
-                st.dataframe(styled_df)
-    else:
-        st.title("📊 Financial Statements – Top 5 Candidates")
-        st.markdown("This scan ranks stocks from our watchlist. Click a ticker (in rainbow‑text) to view its detailed financials.")
-        horizon = 7
-        training_start = "2018-01-01"
-        if use_watchlist:
-            combined_tickers = list(set(HOT_TICKERS))
-        else:
-            combined_tickers = get_sp500_tickers()
-        st.write("### Candidate Tickers from Watchlist")
-        st.write(combined_tickers[:50] + ["..."])
-        results = []
-        for ticker in combined_tickers:
-            st.write(f"Analyzing {ticker}...")
-            res = analyze_stock(ticker, training_start, horizon)
-            if res:
-                results.append(res)
-        if results:
-            results.sort(key=lambda x: x["combined_score"], reverse=True)
-            top_results = results[:5]
-            st.write("### Top 5 Candidates (Click a ticker below)")
-            cols = st.columns(5)
-            for idx, res in enumerate(top_results):
-                ticker_str = res["ticker"]
-                button_html = f"""
-                <div style="background: linear-gradient(45deg, red, orange, yellow, green, blue, indigo, violet);
-                            -webkit-background-clip: text;
-                            -webkit-text-fill-color: transparent;
-                            font-weight: bold;
-                            font-size: 24px;
-                            cursor: pointer;"
-                     onclick="window.location.href='?selected_ticker={ticker_str}'">
-                     {ticker_str}
-                </div>
-                """
-                cols[idx].markdown(button_html, unsafe_allow_html=True)
-        else:
-            st.error("No valid stock analyses were generated from the market scan.")
-
-##############################
-# NEXT STEPS & SUGGESTIONS
-##############################
-st.write("### Next Steps & Suggestions")
-st.markdown("""
-- **Automated Trade Execution:** Integrate with your brokerage’s API for automated options trade execution.
-- **Scheduled Model Runs:** Deploy on a cloud server with scheduled runs (e.g., AWS Lambda).
-- **Enhanced Alternative Data:** Expand sentiment analysis to include additional data sources (replace placeholders with real API calls).
-- **Risk Management Optimization:** Continuously refine your risk parameters and backtest your strategies.
-- **Continuous Learning:** Use the Optuna dashboard to monitor hyperparameter tuning.
-
-**Disclaimer**: All predictions and signals are for educational purposes only.
-""")
