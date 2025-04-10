@@ -26,12 +26,10 @@ scikit-learn==1.6.1
 xgboost==2.1.4
 nltk==3.8.1
 pyngrok
-tweepy
-praw
+tweepy==4.14.0
+praw==7.6.0
 matplotlib
 tensorflow
 seaborn
 yfinance
-pip install praw
-tweepy
-praw
+polygon-api-client==1.14.4
